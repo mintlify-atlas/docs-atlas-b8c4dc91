@@ -1,0 +1,102 @@
+---
+title: Introduction
+description: A tiny utility for batching and caching operations
+---
+
+# Welcome to dldr
+
+dldr is a lightweight, efficient utility for batching and caching operations. It automatically groups multiple requests for data within the same tick, reducing redundant operations and improving performance.
+
+<Note>
+  dldr uses `queueMicrotask` under the hood to intelligently batch requests made during the same event loop tick.
+</Note>
+
+## Why dldr?
+
+When building applications that fetch data, you often encounter the N+1 problem - making separate requests for related data that could be batched together. dldr solves this by:
+
+- **Automatic Batching** - Groups requests made in the same tick
+- **Deduplication** - Ensures each unique key is only fetched once
+- **Optional Caching** - Cache results across ticks for even better performance
+- **Tiny Footprint** - Minimal overhead with maximum impact
+- **Framework Agnostic** - Works with any JavaScript/TypeScript project
+
+## Quick Example
+
+```ts
+import { load } from 'dldr';
+
+// Define your loader function
+const getPosts = (keys) => sql`SELECT id, name FROM posts WHERE id IN (${keys})`;
+
+// Make multiple requests
+const posts = await Promise.all([
+  load(getPosts, '123'),
+  load(getPosts, '123'), // Deduplicated!
+  load(getPosts, '456'),
+]);
+
+// Your loader is called just once with ['123', '456']
+```
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install dldr via npm or JSR in seconds
+  </Card>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get up and running with a working example
+  </Card>
+  <Card title="Caching" icon="database" href="/concepts/caching">
+    Learn how to cache results across ticks
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/load">
+    Explore the complete API documentation
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<CardGroup cols={3}>
+  <Card title="Batching" icon="layer-group">
+    Automatically batches requests within the same microtask tick
+  </Card>
+  <Card title="Deduplication" icon="clone">
+    Prevents duplicate requests for the same key
+  </Card>
+  <Card title="Caching" icon="bolt">
+    Optional caching module for persistent results
+  </Card>
+  <Card title="Type Safe" icon="shield">
+    Full TypeScript support with complete type inference
+  </Card>
+  <Card title="Zero Config" icon="wand-magic-sparkles">
+    Works out of the box with sensible defaults
+  </Card>
+  <Card title="Flexible" icon="puzzle-piece">
+    Supports custom identity functions and cache implementations
+  </Card>
+</CardGroup>
+
+## Use Cases
+
+<Tip>
+  dldr is perfect for GraphQL resolvers, REST API batching, database query optimization, and any scenario where you need to consolidate multiple requests.
+</Tip>
+
+### GraphQL Resolvers
+
+Avoid the N+1 query problem in your GraphQL resolvers by batching field resolutions.
+
+### Database Queries
+
+Reduce database round-trips by batching multiple queries into a single operation.
+
+### API Requests
+
+Minimize HTTP requests by grouping multiple API calls together.
+
+### Data Loading
+
+Optimize data fetching in React, Vue, or any other framework.

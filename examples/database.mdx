@@ -1,0 +1,290 @@
+---
+title: 'Database Query Batching'
+description: 'Batch and optimize database queries using dldr to reduce round trips and improve performance'
+---
+
+# Database Query Batching
+
+dldr excels at batching database queries, reducing the number of round trips to your database and significantly improving performance.
+
+## Basic Database Batching
+
+The most common pattern is batching record lookups by ID:
+
+<Steps>
+
+<Step title="Define your load function">
+
+Create a function that accepts an array of keys and returns an array of results:
+
+```ts
+import { load } from 'dldr';
+
+const getPosts = async (ids: string[]) => {
+  return sql`SELECT id, name FROM posts WHERE id IN (${ids})`;
+};
+```
+
+</Step>
+
+<Step title="Create a bound loader">
+
+Bind your load function for convenience:
+
+```ts
+const loadPost = load.bind(null, getPosts);
+```
+
+</Step>
+
+<Step title="Queue multiple loads">
+
+Queue up your load operations throughout your application code:
+
+```ts
+const posts = [
+  load(getPosts, '123'),
+  loadPost('123'), // functionally equivalent to the above
+  load(getPosts, '456'),
+];
+
+// Later in your code
+posts.push(load(getPosts, '789'));
+```
+
+</Step>
+
+<Step title="Resolve all at once">
+
+All calls within the same tick are automatically batched into a single database query:
+
+```ts
+const loaded = await Promise.all(posts);
+
+// getPosts is called ONCE with ['123', '456', '789']
+// Result: [
+//   { id: '123', name: '123' },
+//   { id: '123', name: '123' },
+//   { id: '456', name: '456' },
+//   { id: '789', name: '789' },
+// ]
+```
+
+</Step>
+
+</Steps>
+
+## Database Examples
+
+<Tabs>
+
+<Tab title="PostgreSQL">
+
+Using PostgreSQL with the `postgres` library:
+
+```ts
+import { load } from 'dldr';
+import postgres from 'postgres';
+
+const sql = postgres('postgres://localhost/mydb');
+
+const getUsers = async (ids: string[]) => {
+  const users = await sql`
+    SELECT * FROM users 
+    WHERE id = ANY(${ids})
+  `;
+  
+  // Ensure results match the order of input IDs
+  return ids.map(id => 
+    users.find(user => user.id === id)
+  );
+};
+
+const loadUser = load.bind(null, getUsers);
+
+// Usage
+const users = await Promise.all([
+  loadUser('user-1'),
+  loadUser('user-2'),
+  loadUser('user-3'),
+]);
+```
+
+</Tab>
+
+<Tab title="Prisma">
+
+Using Prisma ORM:
+
+```ts
+import { load } from 'dldr';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+const getUsers = async (ids: string[]) => {
+  const users = await prisma.user.findMany({
+    where: {
+      id: { in: ids }
+    }
+  });
+  
+  // Return in the same order as requested
+  return ids.map(id => 
+    users.find(user => user.id === id)
+  );
+};
+
+const loadUser = load.bind(null, getUsers);
+
+// Usage
+const user = await loadUser('user-1');
+```
+
+</Tab>
+
+<Tab title="MongoDB">
+
+Using MongoDB with the native driver:
+
+```ts
+import { load } from 'dldr';
+import { MongoClient } from 'mongodb';
+
+const client = new MongoClient('mongodb://localhost:27017');
+const db = client.db('mydb');
+
+const getProducts = async (ids: string[]) => {
+  const products = await db.collection('products')
+    .find({ _id: { $in: ids } })
+    .toArray();
+  
+  // Maintain order
+  return ids.map(id => 
+    products.find(product => product._id === id)
+  );
+};
+
+const loadProduct = load.bind(null, getProducts);
+
+// Usage
+const products = await Promise.all([
+  loadProduct('prod-1'),
+  loadProduct('prod-2'),
+]);
+```
+
+</Tab>
+
+<Tab title="Drizzle">
+
+Using Drizzle ORM:
+
+```ts
+import { load } from 'dldr';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { inArray } from 'drizzle-orm';
+import { users } from './schema';
+
+const db = drizzle(pool);
+
+const getUsers = async (ids: string[]) => {
+  const results = await db
+    .select()
+    .from(users)
+    .where(inArray(users.id, ids));
+  
+  // Preserve order
+  return ids.map(id => 
+    results.find(user => user.id === id)
+  );
+};
+
+const loadUser = load.bind(null, getUsers);
+```
+
+</Tab>
+
+</Tabs>
+
+## Important: Maintaining Order
+
+Your batch function **must** return results in the same order as the input keys:
+
+```ts
+const getPosts = async (ids: string[]) => {
+  const posts = await sql`SELECT * FROM posts WHERE id IN (${ids})`;
+  
+  // ✅ Correct: Map results to match input order
+  return ids.map(id => 
+    posts.find(post => post.id === id) || new Error('Not found')
+  );
+  
+  // ❌ Wrong: Returning database order
+  // return posts;
+};
+```
+
+## Handling Errors
+
+Return `Error` objects for individual failures:
+
+```ts
+const getUsers = async (ids: string[]) => {
+  const users = await fetchUsers(ids);
+  
+  return ids.map(id => {
+    const user = users.find(u => u.id === id);
+    
+    if (!user) {
+      return new Error(`User ${id} not found`);
+    }
+    
+    return user;
+  });
+};
+
+// Usage
+try {
+  const user = await loadUser('invalid-id');
+} catch (error) {
+  console.error('User not found:', error.message);
+}
+```
+
+## Using Identity Keys
+
+When your load function returns objects with a different key structure, use `identityKey`:
+
+```ts
+const getUsersByEmail = async (emails: string[]) => {
+  // Returns objects with { email, name, id }
+  return sql`SELECT * FROM users WHERE email IN (${emails})`;
+};
+
+const loadUser = load.bind(null, getUsersByEmail);
+
+// Specify which field to use for matching
+const user = await loadUser('john@example.com', 'email');
+```
+
+## Combining with Caching
+
+For frequently accessed data, combine batching with caching:
+
+```ts
+import { load } from 'dldr/cache';
+
+const cache = new Map();
+const loadPost = load.bind(null, getPosts, cache);
+
+const posts = await Promise.all([
+  loadPost('123'),
+  loadPost('123'), // Cached - won't make a second database call
+  loadPost('456'),
+]);
+
+// getPosts is called ONCE with ['123', '456']
+```
+
+Learn more in the [Custom Cache Example](/examples/custom-cache).

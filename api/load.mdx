@@ -1,0 +1,119 @@
+---
+title: load()
+description: Load a value for a given key with automatic batching
+---
+
+The `load()` function batches operations within the current microtask tick. All calls to `load()` with the same loader function are automatically batched together and executed as a single operation.
+
+## Signature
+
+```typescript
+function load<T, K = string>(
+  loadFn: LoadFn<T, K>,
+  key: K,
+  identity?: string
+): Promise<T>
+```
+
+## Parameters
+
+<ParamField path="loadFn" type="LoadFn<T, K>" required>
+  A loader function that accepts an array of keys and returns a Promise of values or errors. The loader must return a value (or Error) for each key in the same order.
+  
+  ```typescript
+  type LoadFn<T, K = string> = (keys: K[]) => Promise<(T | Error)[]>
+  ```
+  
+  <Warning>
+    The loader function must provide a value for each key in the given set of keys. Even if this value is an error, it must be provided.
+  </Warning>
+</ParamField>
+
+<ParamField path="key" type="K" required>
+  The key to load. This will be passed to the `loadFn` along with other keys collected in the same batch.
+</ParamField>
+
+<ParamField path="identity" type="string">
+  An optional identity string for deduplication. If not provided, the key will be converted to a string using `jsr:@mr/object-identity`. Keys with the same identity will be deduplicated within a batch.
+</ParamField>
+
+## Returns
+
+<ResponseField name="Promise<T>" type="Promise<T>">
+  A Promise that resolves to the loaded value for the given key.
+</ResponseField>
+
+## How It Works
+
+1. When `load()` is called, the key is added to a batch for the given loader function
+2. The batch is scheduled to execute after all currently queued microtasks using `queueMicrotask()`
+3. Keys with the same identity are deduplicated within the batch
+4. The loader function is called once with all unique keys
+5. Each promise resolves with its corresponding value
+
+<Note>
+  Ensure that the `loadFn` is the same reference between calls. The batching mechanism uses the loader function reference as a key.
+</Note>
+
+## Basic Example
+
+```typescript
+import { load } from 'dldr';
+
+async function loader(keys: string[]) {
+  // expect keys to be ['bar', 'baz'] (deduped)
+  return keys.map(key => 'foo' + key);
+}
+
+const values = await Promise.all([
+  load(loader, 'bar'),
+  load(loader, 'bar'),
+  load(loader, 'baz'),
+]);
+
+console.log(values); // ['foobar', 'foobar', 'foobaz']
+```
+
+## Custom Identity Example
+
+```typescript
+import { load } from 'dldr';
+
+async function loader(keys: {query, variables}[]) {
+  return keys.map((payload) => fetch(
+    '/graphql',
+    { body: JSON.stringify(payload) }
+  ));
+}
+
+function load_query(query: string, variables: object) {
+  // where request_id returns a string of the operation_id and possible identity
+  return load(loader, { query, variables }, request_id(query, variables));
+}
+
+const values = await Promise.all([
+  load_query('query { foo }', {}),
+  load_query('query { foo }', {}),
+  load_query('query { bar }', {}),
+]);
+```
+
+## Database Example
+
+```typescript
+import { load } from 'dldr';
+
+const getPosts = (keys) => sql`SELECT id, name FROM posts WHERE id IN (${keys})`;
+
+const posts = [
+  load(getPosts, '123'),
+  load(getPosts, '123'),
+  load(getPosts, '456'),
+];
+
+posts.push(load(getPosts, '789'));
+
+const loaded = await Promise.all(posts);
+
+// getPosts is called once with ['123', '456', '789']
+```

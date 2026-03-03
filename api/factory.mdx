@@ -1,0 +1,141 @@
+---
+title: factory()
+description: Create a bound loader function with a stable reference
+---
+
+The `factory()` function is a convenience method that creates a loader function with a stable reference to your `LoadFn`. This eliminates the need to pass the loader function on every call.
+
+## Signature
+
+```typescript
+function factory<T, K = string>(
+  loadFn: LoadFn<T, K>
+): (key: K, identity?: string | undefined) => Promise<T>
+```
+
+## Parameters
+
+<ParamField path="loadFn" type="LoadFn<T, K>" required>
+  A loader function that accepts an array of keys and returns a Promise of values or errors.
+  
+  ```typescript
+  type LoadFn<T, K = string> = (keys: K[]) => Promise<(T | Error)[]>
+  ```
+  
+  <Warning>
+    The loader function must provide a value for each key in the given set of keys. Even if this value is an error, it must be provided.
+  </Warning>
+</ParamField>
+
+## Returns
+
+<ResponseField name="load function" type="(key: K, identity?: string) => Promise<T>">
+  A bound function that accepts a key and optional identity, and returns a Promise that resolves to the loaded value.
+  
+  The returned function has the following signature:
+  
+  ```typescript
+  (key: K, identity?: string | undefined) => Promise<T>
+  ```
+</ResponseField>
+
+## Why Use Factory?
+
+Instead of passing the loader function every time you call `load()`, `factory()` creates a bound function with the loader already attached. This provides:
+
+- **Cleaner API**: No need to pass the loader on every call
+- **Stable Reference**: The loader reference is maintained internally
+- **Better DX**: More ergonomic for repeated use throughout your application
+
+## Basic Example
+
+```typescript
+import { factory } from 'dldr';
+
+const load = factory(async function loader(keys: string[]) {
+  return keys.map(key => 'foo' + key);
+});
+
+const values = await Promise.all([
+  load('bar'),
+  load('bar'),
+  load('baz'),
+]);
+
+console.log(values); // ['foobar', 'foobar', 'foobaz']
+```
+
+## Database Example
+
+```typescript
+import { factory } from 'dldr';
+
+const loadPost = factory((keys: string[]) => 
+  sql`SELECT id, name FROM posts WHERE id IN (${keys})`
+);
+
+const posts = await Promise.all([
+  loadPost('123'),
+  loadPost('123'),
+  loadPost('456'),
+]);
+
+// SQL query is called once with ['123', '456']
+```
+
+## GraphQL Resolver Example
+
+```typescript
+import { factory } from 'dldr';
+import { buildSchema, graphql } from 'graphql';
+
+const schema = buildSchema(`
+  type Query {
+    me(name: String!): String!
+  }
+`);
+
+const operation = `{
+  a: me(name: "John")
+  b: me(name: "Jane")
+}`;
+
+const results = await graphql({
+  schema,
+  source: operation,
+  contextValue: {
+    getUser: factory(async (names) => {
+      // Call your database or API
+      const result = names.map((name) => name);
+      return result;
+    }),
+  },
+  rootValue: {
+    me: ({ name }, ctx) => {
+      return ctx.getUser(name);
+    },
+  },
+});
+```
+
+## Comparison with load()
+
+<CodeGroup>
+```typescript Using factory()
+import { factory } from 'dldr';
+
+const loadUser = factory(getUsers);
+
+await loadUser('123');
+await loadUser('456');
+```
+
+```typescript Using load()
+import { load } from 'dldr';
+
+await load(getUsers, '123');
+await load(getUsers, '456');
+```
+</CodeGroup>
+
+Both approaches work identically under the hood, but `factory()` provides a cleaner API when you need to call the loader multiple times.

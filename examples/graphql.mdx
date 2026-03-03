@@ -1,0 +1,180 @@
+---
+title: 'GraphQL Resolver Example'
+description: 'Learn how to use dldr to batch GraphQL resolver calls and eliminate N+1 query problems'
+---
+
+# GraphQL Resolver Example
+
+One of the most common use cases for dldr is batching GraphQL resolver calls to eliminate the N+1 query problem. When multiple resolvers request the same data, dldr automatically batches these requests into a single operation.
+
+## The Problem
+
+When executing GraphQL queries with multiple fields that fetch the same type of data, each field resolver typically makes its own database call. This leads to the N+1 query problem:
+
+```graphql
+{
+  a: me(name: "John")
+  b: me(name: "Jane")
+  c: me(name: "Alice")
+}
+```
+
+Without batching, this would result in 3 separate database calls, one for each field.
+
+## The Solution
+
+Using dldr, all calls within the same tick are automatically batched into a single request:
+
+<Steps>
+
+<Step title="Import dldr">
+
+Import the `load` function from dldr:
+
+```ts
+import { load } from 'dldr';
+import { buildSchema, graphql } from 'graphql';
+```
+
+</Step>
+
+<Step title="Define your schema">
+
+Create your GraphQL schema as usual:
+
+```ts
+const schema = buildSchema(`
+  type Query {
+    me(name: String!): String!
+  }
+`);
+```
+
+</Step>
+
+<Step title="Create a batched loader in context">
+
+Add a loader to your GraphQL context using `load.bind()`. This loader will batch all calls within the current execution:
+
+```ts
+const results = await graphql({
+  schema,
+  source: operation,
+  contextValue: {
+    getUser: load.bind(null, async (names) => {
+      // This function receives ALL requested names in a single call
+      // Fetch from your database, API, etc.
+      const users = await db.users.findMany({
+        where: { name: { in: names } }
+      });
+      
+      // Return results in the same order as the input keys
+      return names.map(name => 
+        users.find(user => user.name === name)
+      );
+    }),
+  },
+  rootValue: {
+    me: ({ name }, ctx) => {
+      // Each resolver call adds to the batch
+      return ctx.getUser(name);
+    },
+  },
+});
+```
+
+</Step>
+
+<Step title="Execute your query">
+
+Now when you execute a query with multiple fields, all calls are batched:
+
+```ts
+const operation = `{
+  a: me(name: "John")
+  b: me(name: "Jane")
+  c: me(name: "Alice")
+}`;
+
+const results = await graphql({
+  schema,
+  source: operation,
+  contextValue: { getUser },
+  rootValue: { me }
+});
+
+// Your batch function is called ONCE with ['John', 'Jane', 'Alice']
+// instead of 3 separate calls
+```
+
+</Step>
+
+</Steps>
+
+## Complete Example
+
+Here's a full working example:
+
+```ts
+import { load } from 'dldr';
+import { buildSchema, graphql } from 'graphql';
+
+const schema = buildSchema(`
+  type Query {
+    me(name: String!): String!
+  }
+`);
+
+const operation = `{
+  a: me(name: "John")
+  b: me(name: "Jane")
+}`;
+
+const results = await graphql({
+  schema,
+  source: operation,
+  contextValue: {
+    getUser: load.bind(null, async (names) => {
+      // Assume you're calling out to a database
+      const result = names.map((name) => name);
+      
+      // This is called ONCE with all requested names
+      return Promise.resolve(result);
+    }),
+  },
+  rootValue: {
+    me: ({ name }, ctx) => {
+      return ctx.getUser(name);
+    },
+  },
+});
+```
+
+## Key Benefits
+
+- **Single database call**: All resolver calls within the same tick are batched into one request
+- **Automatic deduplication**: Requesting the same key multiple times only fetches it once
+- **Type-safe**: Full TypeScript support with proper type inference
+- **Zero configuration**: Works out of the box with no setup required
+
+## Adding Caching
+
+For even better performance, combine batching with caching to avoid refetching data:
+
+```ts
+import { load } from 'dldr/cache';
+
+const cache = new Map();
+
+const contextValue = {
+  getUser: load.bind(null, fetchUsers, cache),
+};
+
+// First query fetches from database
+await graphql({ schema, source: operation, contextValue });
+
+// Subsequent queries use cached results
+await graphql({ schema, source: operation, contextValue });
+```
+
+Learn more about caching in the [Custom Cache Example](/examples/custom-cache).

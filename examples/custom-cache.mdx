@@ -1,0 +1,393 @@
+---
+title: 'Custom Cache Implementation'
+description: 'Implement custom caching strategies with dldr including LRU caches for optimal memory management'
+---
+
+# Custom Cache Implementation
+
+The `dldr/cache` module provides built-in caching to avoid refetching data that has already been loaded. You can use the default Map-based cache or provide your own custom cache implementation.
+
+## Basic Caching
+
+<Steps>
+
+<Step title="Import from dldr/cache">
+
+Use the cache-enabled version of load:
+
+```ts
+import { load } from 'dldr/cache';
+import { getPosts } from './db';
+```
+
+</Step>
+
+<Step title="Create a cache instance">
+
+Create a Map to store cached values:
+
+```ts
+const cache = new Map();
+const loadPost = load.bind(null, getPosts, cache);
+```
+
+If you don't provide a cache, a default Map will be created automatically:
+
+```ts
+// This works too - cache is created internally
+const loadPost = load.bind(null, getPosts);
+```
+
+</Step>
+
+<Step title="Use the cached loader">
+
+The first call fetches from your data source, subsequent calls return cached values:
+
+```ts
+const posts = await Promise.all([
+  load(getPosts, cache, '123'),
+  loadPost('123'), // Cached - no database call
+  loadPost('456'),
+]);
+
+// getPosts is called ONCE with ['123', '456']
+// Even though '123' was requested twice
+```
+
+</Step>
+
+<Step title="Cached across calls">
+
+The cache persists between separate operations:
+
+```ts
+// Later in your code
+const post = await loadPost('123');
+
+// getPosts is NOT called - result is cached
+```
+
+</Step>
+
+</Steps>
+
+## Custom Cache Requirements
+
+Any object that implements the Map interface can be used as a cache:
+
+```ts
+interface MapLike<K, V> {
+  get(key: K): V | undefined;
+  set(key: K, value: V): void;
+  has(key: K): boolean;
+}
+```
+
+## LRU Cache Implementation
+
+For production applications, an LRU (Least Recently Used) cache prevents unbounded memory growth. We recommend using [`tmp-cache`](https://github.com/lukeed/tmp-cache):
+
+<Steps>
+
+<Step title="Install tmp-cache">
+
+```bash
+npm install tmp-cache
+```
+
+</Step>
+
+<Step title="Create an LRU cache">
+
+```ts
+import LRU from 'tmp-cache';
+import { load } from 'dldr/cache';
+
+// Create an LRU cache with max 100 entries
+const cache = new LRU(100);
+
+const loadUser = load.bind(null, getUsers, cache);
+```
+
+</Step>
+
+<Step title="Use as normal">
+
+The LRU cache automatically evicts old entries:
+
+```ts
+// First 100 unique users are cached
+for (let i = 0; i < 100; i++) {
+  await loadUser(`user-${i}`);
+}
+
+// This triggers eviction of the least recently used entry
+await loadUser('user-101');
+```
+
+</Step>
+
+</Steps>
+
+## Cache Implementations
+
+<Tabs>
+
+<Tab title="LRU Cache">
+
+Best for production use with memory constraints:
+
+```ts
+import LRU from 'tmp-cache';
+import { load } from 'dldr/cache';
+import { getUsers } from './db';
+
+// Limit cache to 1000 entries
+const userCache = new LRU(1000);
+const loadUser = load.bind(null, getUsers, userCache);
+
+// Automatically evicts old entries when limit is reached
+const user = await loadUser('user-1');
+```
+
+</Tab>
+
+<Tab title="TTL Cache">
+
+Implement time-based expiration:
+
+```ts
+import { load } from 'dldr/cache';
+
+class TTLCache<K, V> {
+  private cache = new Map<K, { value: V; expires: number }>();
+  private ttl: number;
+
+  constructor(ttlMs: number) {
+    this.ttl = ttlMs;
+  }
+
+  get(key: K): V | undefined {
+    const entry = this.cache.get(key);
+    if (!entry) return undefined;
+    
+    if (Date.now() > entry.expires) {
+      this.cache.delete(key);
+      return undefined;
+    }
+    
+    return entry.value;
+  }
+
+  set(key: K, value: V): void {
+    this.cache.set(key, {
+      value,
+      expires: Date.now() + this.ttl,
+    });
+  }
+
+  has(key: K): boolean {
+    return this.get(key) !== undefined;
+  }
+}
+
+// Cache entries for 5 minutes
+const cache = new TTLCache(5 * 60 * 1000);
+const loadUser = load.bind(null, getUsers, cache);
+```
+
+</Tab>
+
+<Tab title="Redis Cache">
+
+Use Redis for distributed caching:
+
+```ts
+import { load } from 'dldr/cache';
+import Redis from 'ioredis';
+
+class RedisCache {
+  private redis: Redis;
+  private ttl: number;
+
+  constructor(redis: Redis, ttlSeconds: number = 3600) {
+    this.redis = redis;
+    this.ttl = ttlSeconds;
+  }
+
+  async get(key: string) {
+    const value = await this.redis.get(key);
+    return value ? JSON.parse(value) : undefined;
+  }
+
+  async set(key: string, value: any): Promise<void> {
+    await this.redis.setex(
+      key,
+      this.ttl,
+      JSON.stringify(value)
+    );
+  }
+
+  async has(key: string): Promise<boolean> {
+    return (await this.redis.exists(key)) === 1;
+  }
+}
+
+const redis = new Redis();
+const cache = new RedisCache(redis, 3600);
+const loadUser = load.bind(null, getUsers, cache);
+```
+
+</Tab>
+
+<Tab title="Layered Cache">
+
+Combine multiple cache layers:
+
+```ts
+import LRU from 'tmp-cache';
+import { load } from 'dldr/cache';
+
+class LayeredCache<K, V> {
+  private l1: LRU<K, V>;
+  private l2: Map<K, V>;
+
+  constructor(l1Size: number) {
+    this.l1 = new LRU(l1Size);
+    this.l2 = new Map();
+  }
+
+  get(key: K): V | undefined {
+    // Check L1 (fast, limited)
+    let value = this.l1.get(key);
+    if (value !== undefined) return value;
+
+    // Check L2 (slower, larger)
+    value = this.l2.get(key);
+    if (value !== undefined) {
+      // Promote to L1
+      this.l1.set(key, value);
+    }
+    return value;
+  }
+
+  set(key: K, value: V): void {
+    this.l1.set(key, value);
+    this.l2.set(key, value);
+  }
+
+  has(key: K): boolean {
+    return this.l1.has(key) || this.l2.has(key);
+  }
+}
+
+const cache = new LayeredCache(100);
+const loadUser = load.bind(null, getUsers, cache);
+```
+
+</Tab>
+
+</Tabs>
+
+## Cache Management
+
+### Manual Cache Control
+
+Since dldr doesn't handle cache mutations, you control cache invalidation:
+
+```ts
+import { load } from 'dldr/cache';
+
+const cache = new Map();
+const loadUser = load.bind(null, getUsers, cache);
+
+// Clear a specific entry
+const invalidateUser = (id: string) => {
+  cache.delete(id);
+};
+
+// Clear entire cache
+const clearCache = () => {
+  cache.clear();
+};
+
+// Usage
+await loadUser('user-1'); // Fetches from database
+await loadUser('user-1'); // Returns cached value
+
+invalidateUser('user-1');
+await loadUser('user-1'); // Fetches from database again
+```
+
+### Priming the Cache
+
+Pre-populate the cache with known data:
+
+```ts
+const cache = new Map();
+
+// Prime the cache
+cache.set('user-1', { id: 'user-1', name: 'John' });
+cache.set('user-2', { id: 'user-2', name: 'Jane' });
+
+const loadUser = load.bind(null, getUsers, cache);
+
+// These will use cached values
+await loadUser('user-1'); // No database call
+```
+
+### Cache Warming
+
+Warm up the cache on application start:
+
+```ts
+import { load } from 'dldr/cache';
+
+const cache = new Map();
+const loadUser = load.bind(null, getUsers, cache);
+
+// Warm up cache with frequently accessed users
+async function warmCache() {
+  const popularUserIds = ['user-1', 'user-2', 'user-3'];
+  await Promise.all(popularUserIds.map(id => loadUser(id)));
+}
+
+// Call on startup
+await warmCache();
+```
+
+## Best Practices
+
+<AccordionGroup>
+
+<Accordion title="Choose the right cache size">
+  Size your cache based on memory constraints and access patterns. Monitor cache hit rates to optimize size.
+</Accordion>
+
+<Accordion title="Invalidate on mutations">
+  Always invalidate cache entries when the underlying data changes:
+  
+  ```ts
+  async function updateUser(id: string, data: any) {
+    await db.users.update(id, data);
+    cache.delete(id); // Invalidate
+  }
+  ```
+</Accordion>
+
+<Accordion title="Use TTL for stale data">
+  Implement time-based expiration for data that changes frequently but doesn't require immediate invalidation.
+</Accordion>
+
+<Accordion title="Monitor memory usage">
+  Use LRU caches in production to prevent unbounded memory growth. Monitor cache size and eviction rates.
+</Accordion>
+
+</AccordionGroup>
+
+## Next Steps
+
+- Learn about [batching in GraphQL resolvers](/examples/graphql)
+- Optimize [database queries](/examples/database)
+- Read the [Cache API reference](/api/cache)

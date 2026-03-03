@@ -1,0 +1,197 @@
+---
+title: 'Caching'
+description: 'Optional caching layer for persisting loaded values across ticks'
+---
+
+## Overview
+
+The `dldr/cache` module extends the core batching functionality with an optional caching layer. Once a key has been loaded, it's cached and future requests return the cached promise without calling the loader function.
+
+## How Caching Works
+
+The cache implementation wraps the core `dldr.load()` function with a cache lookup:
+
+```typescript lib/cache.ts
+export function load<T, K = string>(
+  loadFn: dldr.LoadFn<T, K>,
+  cache: MapLike<string, Promise<T>> | undefined,
+  key: K,
+  identity: string = identify(key),
+): Promise<T> {
+  cache ||= container.get(loadFn);
+  if (!cache) container.set(loadFn, cache = new Map());
+  if (cache.has(identity)) return Promise.resolve(cache.get(identity)!);
+  const prom = dldr.load(loadFn, key, identity);
+  cache.set(identity, prom);
+  prom.catch(() => cache!.delete(identity));
+  return prom;
+}
+```
+
+### Cache Container
+
+A `WeakMap` associates each loader function with its own cache:
+
+```typescript lib/cache.ts
+const container = new WeakMap<dldr.LoadFn<any, any>, Map<string, Promise<any>>>();
+```
+
+<Note>
+If you don't provide a cache, dldr automatically creates a default `Map` for the loader function.
+</Note>
+
+## Cache Behavior
+
+### Cache Hits
+
+When a key exists in the cache, its promise is immediately returned:
+
+```typescript lib/cache.ts
+if (cache.has(identity)) return Promise.resolve(cache.get(identity)!);
+```
+
+### Cache Misses
+
+When a key is not cached:
+
+1. The core `dldr.load()` is called to batch the request
+2. The returned promise is stored in the cache
+3. If the promise rejects, it's automatically removed from the cache
+
+```typescript lib/cache.ts
+const prom = dldr.load(loadFn, key, identity);
+cache.set(identity, prom);
+prom.catch(() => cache!.delete(identity));
+```
+
+<Tip>
+Failed loads are **not** cached. This ensures that transient errors don't permanently block future attempts.
+</Tip>
+
+## Usage Example
+
+```typescript
+import { load } from 'dldr/cache';
+
+const getPosts = async (keys: string[]) => 
+  sql`SELECT id, name FROM posts WHERE id IN (${keys})`;
+
+const cache = new Map();
+const loadPost = load.bind(null, getPosts, cache);
+
+// First batch - calls getPosts(['123', '456'])
+const batch1 = await Promise.all([
+  loadPost('123'),
+  loadPost('123'), // Deduplicated in batch
+  loadPost('456'),
+]);
+
+// Second batch - only calls getPosts(['789'])
+// '123' and '456' are served from cache
+const batch2 = await Promise.all([
+  loadPost('123'), // Cached
+  loadPost('456'), // Cached
+  loadPost('789'), // New - batched and loaded
+]);
+```
+
+## Custom Cache Implementation
+
+You can provide any `MapLike` object as a cache:
+
+```typescript lib/cache.ts
+export type MapLike<K, V> = {
+  get(key: K): V | undefined;
+  set(key: K, value: V): void;
+  has(key: K): boolean;
+  delete(key: K): void;
+};
+```
+
+### LRU Cache Example
+
+For long-lived caches, consider using an LRU cache like `tmp-cache`:
+
+```typescript
+import LRU from 'tmp-cache';
+import { load } from 'dldr/cache';
+
+// Cache up to 100 entries
+const cache = new LRU(100);
+const loadUser = load.bind(null, getUsers, cache);
+```
+
+<Warning>
+The cache stores **promises**, not values. This means in-flight requests are cached, preventing duplicate batched calls across ticks.
+</Warning>
+
+## Cache Management
+
+dldr does not handle cache mutations. You're responsible for:
+
+- **Invalidation**: Manually delete keys when data changes
+- **Priming**: Pre-populate the cache with known values
+- **Expiration**: Use a cache implementation with TTL support
+
+```typescript
+const cache = new Map();
+const loadPost = load.bind(null, getPosts, cache);
+
+// Load and cache
+await loadPost('123');
+
+// Invalidate after mutation
+await updatePost('123', { title: 'New Title' });
+cache.delete(identify('123'));
+
+// Next load will fetch fresh data
+await loadPost('123');
+```
+
+## Factory with Cache
+
+The cache module also provides a `factory()` function:
+
+```typescript lib/cache.ts
+export function factory<T, K = string>(
+  loadFn: dldr.LoadFn<T, K>,
+  cache?: MapLike<string, Promise<T>> | undefined,
+): (key: K, identity?: string | undefined) => Promise<T> {
+  return (load<T, K>).bind(0, loadFn, cache);
+}
+```
+
+Usage:
+
+```typescript
+import { factory } from 'dldr/cache';
+
+const loadPost = factory(getPosts, new Map());
+
+const posts = [
+  loadPost('123'),
+  loadPost('456'),
+];
+```
+
+## Cache vs Batching
+
+- **Batching**: Operates within a single tick, deduplicates requests
+- **Caching**: Operates across ticks, persists loaded values
+
+Both work together:
+
+```typescript
+import { load } from 'dldr/cache';
+
+// Tick 1: Batching + caching
+const p1 = load(getPosts, cache, '123');
+const p2 = load(getPosts, cache, '123'); // Same batch, same promise
+await Promise.all([p1, p2]);
+// Result: 1 call to getPosts, value cached
+
+// Tick 2: Cache hit
+const p3 = load(getPosts, cache, '123'); // Returns cached promise
+await p3;
+// Result: 0 calls to getPosts
+```

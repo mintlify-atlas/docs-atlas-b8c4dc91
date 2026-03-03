@@ -1,0 +1,238 @@
+---
+title: 'Identity-Based Deduplication'
+description: 'How dldr uses identity strings to deduplicate requests'
+---
+
+## Overview
+
+Identity-based deduplication allows dldr to determine when two load requests are for the same resource, even if the key objects are different references. This is critical for batching and caching to work correctly.
+
+## Default Identity Function
+
+dldr uses the [`object-identity`](https://jsr.io/@mr/object-identity) package to generate identity strings:
+
+```typescript lib/mod.ts
+import { identify } from 'object-identity';
+
+export function load<T, K = string>(
+  loadFn: LoadFn<T, K>,
+  key: K,
+  identity: string = identify(key),
+): Promise<T> {
+  // ...
+}
+```
+
+<Note>
+The `identity` parameter defaults to `identify(key)`, which generates a deterministic string representation of the key.
+</Note>
+
+## How Identity Works
+
+### Simple Keys
+
+For primitive values, the identity is straightforward:
+
+```typescript
+load(getPosts, '123')        // identity: '123'
+load(getPosts, '456')        // identity: '456'
+load(getPosts, '123')        // identity: '123' (deduplicated)
+```
+
+### Object Keys
+
+For objects, `identify()` creates a stable string based on the object's properties:
+
+```typescript
+const key1 = { query: 'query { foo }', variables: {} };
+const key2 = { query: 'query { foo }', variables: {} };
+
+load(loader, key1); // identity: generated from object structure
+load(loader, key2); // Same identity! Deduplicated even though key1 !== key2
+```
+
+## Deduplication in Batching
+
+When multiple requests with the same identity are made in the same tick, only one key is sent to the loader:
+
+```typescript lib/mod.ts
+let b = batch[0]!.indexOf(identity);
+// If the batch exists, return its promise, without enqueueing a new task.
+if (~b) return batch[2][b].p;
+```
+
+The batch's identity array (`batch[0]`) is checked for duplicates. If found, the existing promise is returned.
+
+### Example
+
+```typescript
+const getPosts = async (keys: string[]) => {
+  console.log('Called with:', keys);
+  return keys.map(key => ({ id: key }));
+};
+
+const posts = await Promise.all([
+  load(getPosts, '123'),
+  load(getPosts, '123'), // Same identity
+  load(getPosts, '456'),
+  load(getPosts, '123'), // Same identity
+]);
+
+// Console: Called with: ['123', '456']
+// All three '123' requests share the same promise
+```
+
+## Deduplication in Caching
+
+The cache uses identity strings as keys:
+
+```typescript lib/cache.ts
+export function load<T, K = string>(
+  loadFn: dldr.LoadFn<T, K>,
+  cache: MapLike<string, Promise<T>> | undefined,
+  key: K,
+  identity: string = identify(key),
+): Promise<T> {
+  // ...
+  if (cache.has(identity)) return Promise.resolve(cache.get(identity)!);
+  // ...
+  cache.set(identity, prom);
+  // ...
+}
+```
+
+This ensures that object keys with the same structure hit the cache:
+
+```typescript
+import { load } from 'dldr/cache';
+
+const cache = new Map();
+
+// First call - caches the result
+await load(loader, cache, { id: '123' });
+
+// Second call - different object reference, but same identity
+await load(loader, cache, { id: '123' }); // Cache hit!
+```
+
+## Custom Identity
+
+You can provide a custom identity string when the default behavior isn't sufficient:
+
+```typescript lib/mod.ts
+export function load<T, K = string>(
+  loadFn: LoadFn<T, K>,
+  key: K,
+  identity: string = identify(key), // <-- Optional custom identity
+): Promise<T>
+```
+
+### Use Case: GraphQL Operations
+
+For GraphQL, you might want to generate identity based on the operation ID:
+
+```typescript
+interface GraphQLPayload {
+  query: string;
+  variables: object;
+}
+
+async function loader(keys: GraphQLPayload[]) {
+  return keys.map((payload) => 
+    fetch('/graphql', { body: JSON.stringify(payload) })
+  );
+}
+
+function requestId(query: string, variables: object): string {
+  const operationId = extractOperationId(query); // Your logic here
+  return `${operationId}:${identify(variables)}`;
+}
+
+function loadQuery(query: string, variables: object) {
+  return load(
+    loader,
+    { query, variables },
+    requestId(query, variables) // Custom identity
+  );
+}
+
+const results = await Promise.all([
+  loadQuery('query { foo }', {}),
+  loadQuery('query { foo }', {}), // Same identity
+  loadQuery('query { bar }', {}), // Different identity
+]);
+```
+
+<Tip>
+Custom identities are especially useful when the key contains metadata that shouldn't affect deduplication, or when you have a more efficient way to compute identity.
+</Tip>
+
+## Identity String Requirements
+
+<Warning>
+Identity strings must be **deterministic** and **unique** per resource:
+
+- **Deterministic**: The same key always produces the same identity
+- **Unique**: Different resources must have different identities
+
+Violating these rules can cause incorrect deduplication or cache collisions.
+</Warning>
+
+### Good Identity
+
+```typescript
+// Deterministic and unique
+function customIdentity(userId: string, include: string[]) {
+  return `${userId}:${include.sort().join(',')}`;
+}
+
+load(loader, { userId: '123', include: ['posts', 'comments'] }, 
+  customIdentity('123', ['posts', 'comments'])
+);
+```
+
+### Bad Identity
+
+```typescript
+// Non-deterministic - uses random value
+function badIdentity(key: any) {
+  return `${key.id}:${Math.random()}`; // ❌ Different every time!
+}
+
+// Non-unique - ignores important fields
+function badIdentity2(key: { id: string, version: number }) {
+  return key.id; // ❌ Different versions have same identity!
+}
+```
+
+## Identity in Parallel Arrays
+
+Internally, batches maintain parallel arrays where identity is the index:
+
+```typescript lib/mod.ts
+type Batch<T, K> = [
+  identies: string[],  // ['123', '456', '789']
+  keys: K[],           // [key1, key2, key3]
+  tasks: Task<T>[]     // [task1, task2, task3]
+];
+```
+
+When the loader returns results, they're matched by index:
+
+```typescript lib/mod.ts
+loadFn(keys).then(function (values) {
+  if (values.length !== tasks.length) {
+    return reject(new TypeError('same length mismatch'));
+  }
+  
+  for (
+    ;
+    (tmp = values[i++]), i <= values.length;
+    tmp instanceof Error ? tasks[i - 1].r(tmp) : tasks[i - 1].s(tmp)
+  );
+});
+```
+
+<Note>
+This is why the loader function **must** return results in the same order as the input keys. The identity system depends on positional matching.
+</Note>

@@ -1,0 +1,145 @@
+---
+title: 'Batching'
+description: 'How dldr automatically batches operations within the current tick'
+---
+
+## Overview
+
+dldr uses `queueMicrotask` to automatically batch multiple load operations into a single call to your loader function. All `load()` calls made within the same tick are collected and dispatched together.
+
+## How It Works
+
+The batching mechanism relies on three key components:
+
+### 1. Batch Container
+
+A `WeakMap` stores the current batch for each loader function:
+
+```typescript lib/mod.ts
+let batchContainer = new WeakMap<LoadFn<any, any>, Batch<any, any>>();
+```
+
+This ensures that each loader function has its own isolated batch, and the weak reference allows garbage collection when the loader is no longer referenced.
+
+### 2. Batch Structure
+
+Each batch contains three parallel arrays:
+
+```typescript lib/mod.ts
+type Batch<T, K> = [
+  identies: string[],  // Identity strings for deduplication
+  keys: K[],           // The actual keys to load
+  tasks: Task<T>[]     // Promise resolve/reject handlers
+];
+```
+
+<Note>
+The three arrays are kept in sync by index - `keys[0]` corresponds to `identies[0]` and `tasks[0]`.
+</Note>
+
+### 3. Microtask Scheduling
+
+When the first `load()` call for a loader function occurs in a tick, dldr schedules the batch execution:
+
+```typescript lib/mod.ts
+if (!batch) {
+  batchContainer.set(loadFn, batch = [[], keys = [], tasks = []]);
+  
+  queueMicrotask(function () {
+    // Delete batch immediately to start fresh for next tick
+    batchContainer.delete(loadFn);
+    
+    loadFn(keys).then(function (values) {
+      if (values.length !== tasks.length) {
+        return reject(new TypeError('same length mismatch'));
+      }
+      
+      // Resolve or reject each task based on the result
+      for (
+        ;
+        (tmp = values[i++]), i <= values.length;
+        tmp instanceof Error ? tasks[i - 1].r(tmp) : tasks[i - 1].s(tmp)
+      );
+    }, reject);
+  });
+}
+```
+
+## Batching Within the Same Tick
+
+<Tip>
+All synchronous `load()` calls in the same tick are automatically batched together.
+</Tip>
+
+```typescript
+const getPosts = async (keys: string[]) => 
+  sql`SELECT id, name FROM posts WHERE id IN (${keys})`;
+
+const posts = [
+  load(getPosts, '123'),
+  load(getPosts, '456'),
+  load(getPosts, '789'),
+];
+
+// Only ONE call to getPosts with ['123', '456', '789']
+const loaded = await Promise.all(posts);
+```
+
+## Deduplication
+
+Multiple requests for the same identity within a batch are automatically deduplicated:
+
+```typescript lib/mod.ts
+let b = batch[0]!.indexOf(identity);
+// If the batch exists, return its promise, without enqueueing a new task.
+if (~b) return batch[2][b].p;
+```
+
+When a duplicate is found, the existing promise is returned instead of adding a new task.
+
+```typescript
+const posts = [
+  load(getPosts, '123'),
+  load(getPosts, '123'), // Same key - returns same promise
+  load(getPosts, '456'),
+];
+
+// getPosts called with ['123', '456'] (deduplicated)
+await Promise.all(posts);
+```
+
+## Batch Lifecycle
+
+1. **First load() call**: Creates a new batch and schedules microtask
+2. **Subsequent load() calls**: Add to the existing batch
+3. **Microtask executes**: Batch is deleted from container
+4. **Loader function called**: All keys processed together
+5. **Results distributed**: Each task's promise is resolved/rejected
+
+<Warning>
+The loader function **must** return a value (or Error) for each key in the same order. If the lengths don't match, all tasks in the batch are rejected.
+</Warning>
+
+## Using factory() for Convenience
+
+The `factory()` function creates a bound version of your loader:
+
+```typescript lib/mod.ts
+export function factory<T, K = string>(
+  loadFn: LoadFn<T, K>,
+): (key: K, identity?: string | undefined) => Promise<T> {
+  return (load<T, K>).bind(0, loadFn);
+}
+```
+
+This eliminates the need to pass the loader function repeatedly:
+
+```typescript
+const loadPost = factory(getPosts);
+
+const posts = [
+  loadPost('123'),
+  loadPost('456'),
+  loadPost('789'),
+];
+```

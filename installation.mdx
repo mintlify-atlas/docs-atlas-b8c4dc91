@@ -1,0 +1,150 @@
+---
+title: Installation
+description: Install dldr in your project using npm or JSR
+---
+
+# Installation
+
+dldr is available on both npm and JSR, making it easy to install in any JavaScript or TypeScript project.
+
+## Package Managers
+
+<Tabs>
+  <Tab title="npm">
+    Install dldr from npm:
+
+    ```bash
+    npm install dldr
+    ```
+
+    <Note>
+      The npm package is published as `dldr`
+    </Note>
+  </Tab>
+  
+  <Tab title="pnpm">
+    Install dldr using pnpm:
+
+    ```bash
+    pnpm add dldr
+    ```
+  </Tab>
+  
+  <Tab title="yarn">
+    Install dldr using yarn:
+
+    ```bash
+    yarn add dldr
+    ```
+  </Tab>
+  
+  <Tab title="bun">
+    Install dldr using bun:
+
+    ```bash
+    bun add dldr
+    ```
+  </Tab>
+  
+  <Tab title="JSR">
+    Install dldr from JSR:
+
+    ```bash
+    npx jsr add @mr/dataloader
+    ```
+
+    Or with deno:
+
+    ```bash
+    deno add @mr/dataloader
+    ```
+
+    <Note>
+      On JSR, the package is published as `@mr/dataloader`
+    </Note>
+  </Tab>
+</Tabs>
+
+## Importing
+
+After installation, you can import dldr in your project:
+
+<CodeGroup>
+
+```ts npm
+import { load } from 'dldr';
+
+// With caching
+import { load } from 'dldr/cache';
+```
+
+```ts JSR
+import { load } from '@mr/dataloader';
+
+// With caching
+import { load } from '@mr/dataloader/cache';
+```
+
+</CodeGroup>
+
+## Module Exports
+
+dldr provides two main entry points:
+
+<CardGroup cols={2}>
+  <Card title="dldr" icon="box">
+    **Main Module**
+    
+    The core batching functionality without caching.
+    
+    ```ts
+    import { load, factory } from 'dldr';
+    ```
+  </Card>
+  
+  <Card title="dldr/cache" icon="database">
+    **Cache Module**
+    
+    Batching with built-in caching support.
+    
+    ```ts
+    import { load } from 'dldr/cache';
+    ```
+  </Card>
+</CardGroup>
+
+## TypeScript Support
+
+dldr is written in TypeScript and includes complete type definitions out of the box. No additional `@types` packages are needed.
+
+```ts
+import { load, type LoadFn } from 'dldr';
+
+// Full type inference
+const loader: LoadFn<User, string> = async (ids) => {
+  // TypeScript knows ids is string[]
+  // and expects Promise<(User | Error)[]>
+  return fetchUsers(ids);
+};
+
+const user = await load(loader, '123');
+// TypeScript knows user is type User
+```
+
+## Runtime Requirements
+
+<Note>
+  dldr requires `queueMicrotask` support, which is available in all modern JavaScript environments including Node.js 11+, Deno, Bun, and all modern browsers.
+</Note>
+
+## Dependency
+
+dldr has a single dependency:
+
+- `object-identity` - Used for creating identity keys from complex objects
+
+## Next Steps
+
+<Card title="Quick Start" icon="rocket" href="/quickstart">
+  Now that you've installed dldr, let's build your first loader
+</Card>

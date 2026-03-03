@@ -1,0 +1,232 @@
+---
+title: dldr/cache
+description: Batching with automatic caching support
+---
+
+The `dldr/cache` module provides the same batching functionality as the base module, but with automatic caching of loaded values. Once a key has been loaded, it will be cached for all future calls.
+
+## load()
+
+Load a value with batching and caching support. Entries that exist in the cache will be returned immediately without being forwarded to the loader function.
+
+### Signature
+
+```typescript
+function load<T, K = string>(
+  loadFn: LoadFn<T, K>,
+  cache: MapLike<string, Promise<T>> | undefined,
+  key: K,
+  identity?: string
+): Promise<T>
+```
+
+### Parameters
+
+<ParamField path="loadFn" type="LoadFn<T, K>" required>
+  A loader function that accepts an array of keys and returns a Promise of values or errors.
+  
+  ```typescript
+  type LoadFn<T, K = string> = (keys: K[]) => Promise<(T | Error)[]>
+  ```
+</ParamField>
+
+<ParamField path="cache" type="MapLike<string, Promise<T>> | undefined">
+  A Map-like object for caching loaded values. If `undefined`, a default `Map` will be created and used automatically.
+  
+  ```typescript
+  type MapLike<K, V> = {
+    get(key: K): V | undefined;
+    set(key: K, value: V): void;
+    has(key: K): boolean;
+    delete(key: K): void;
+  }
+  ```
+  
+  <Note>
+    Failed promises are automatically removed from the cache, allowing retries.
+  </Note>
+</ParamField>
+
+<ParamField path="key" type="K" required>
+  The key to load. This will be passed to the `loadFn` along with other keys collected in the same batch.
+</ParamField>
+
+<ParamField path="identity" type="string">
+  An optional identity string for deduplication. If not provided, the key will be converted to a string using `jsr:@mr/object-identity`.
+</ParamField>
+
+### Returns
+
+<ResponseField name="Promise<T>" type="Promise<T>">
+  A Promise that resolves to the loaded value for the given key. If the value exists in the cache, the cached promise is returned immediately.
+</ResponseField>
+
+### Basic Example
+
+```typescript
+import { load } from 'dldr/cache';
+
+async function loader(keys: string[]) {
+  return keys.map(key => 'foo' + key);
+}
+
+const cache = new Map();
+
+const values = await Promise.all([
+  load(loader, cache, 'bar'),
+  load(loader, cache, 'bar'),
+  load(loader, cache, 'baz'),
+]);
+
+// loader is called once with ['bar', 'baz']
+console.log(values); // ['foobar', 'foobar', 'foobaz']
+
+// Subsequent calls use the cache
+const values2 = await Promise.all([
+  load(loader, cache, 'bar'),
+  load(loader, cache, 'baz'),
+  load(loader, cache, 'zig'),
+]);
+
+// loader is called once with ['zig'] - 'bar' and 'baz' are cached
+console.log(values2); // ['foobar', 'foobaz', 'foozig']
+```
+
+### Database Example
+
+```typescript
+import { load } from 'dldr/cache';
+import { getPosts } from './example';
+
+const cache = new Map();
+const loadPost = load.bind(null, getPosts, cache);
+
+const posts = await Promise.all([
+  load(getPosts, cache, '123'),
+  loadPost('123'), // cached, functionally equivalent
+  loadPost('456'),
+]);
+
+// getPosts is called once with ['123', '456']
+
+const post = await loadPost('123');
+// getPosts is not called - value is cached
+```
+
+## factory()
+
+Create a bound loader function with caching support.
+
+### Signature
+
+```typescript
+function factory<T, K = string>(
+  loadFn: LoadFn<T, K>,
+  cache?: MapLike<string, Promise<T>> | undefined
+): (key: K, identity?: string | undefined) => Promise<T>
+```
+
+### Parameters
+
+<ParamField path="loadFn" type="LoadFn<T, K>" required>
+  A loader function that accepts an array of keys and returns a Promise of values or errors.
+</ParamField>
+
+<ParamField path="cache" type="MapLike<string, Promise<T>> | undefined">
+  An optional Map-like object for caching loaded values. If not provided, a default `Map` will be created automatically.
+</ParamField>
+
+### Returns
+
+<ResponseField name="load function" type="(key: K, identity?: string) => Promise<T>">
+  A bound function that accepts a key and optional identity, and returns a Promise that resolves to the loaded value.
+</ResponseField>
+
+### Basic Example
+
+```typescript
+import { factory } from 'dldr/cache';
+
+const loadPost = factory(async (keys: string[]) => {
+  return keys.map(key => ({ id: key, name: key }));
+});
+
+const posts = await Promise.all([
+  loadPost('123'),
+  loadPost('123'),
+  loadPost('456'),
+]);
+
+// Loader is called once with ['123', '456']
+
+const post = await loadPost('123');
+// Loader is not called - value is cached
+```
+
+## Custom Cache Implementation
+
+You can provide any Map-like object as a cache. This is useful for implementing custom caching strategies like LRU caches.
+
+### LRU Cache Example
+
+```typescript
+import LRU from 'tmp-cache';
+import { factory } from 'dldr/cache';
+
+const loadUser = factory(getUsers, new LRU(100));
+
+await loadUser('123');
+await loadUser('456');
+```
+
+### Custom Map-Like Object
+
+```typescript
+import { load } from 'dldr/cache';
+
+class CustomCache<K, V> {
+  private cache = new Map<K, V>();
+  
+  get(key: K): V | undefined {
+    return this.cache.get(key);
+  }
+  
+  set(key: K, value: V): void {
+    this.cache.set(key, value);
+  }
+  
+  has(key: K): boolean {
+    return this.cache.has(key);
+  }
+  
+  delete(key: K): void {
+    this.cache.delete(key);
+  }
+}
+
+const cache = new CustomCache();
+const value = await load(loader, cache, 'key');
+```
+
+## Cache Behavior
+
+<Note>
+  Failed promises are automatically removed from the cache. This allows you to retry failed operations without manually clearing the cache.
+</Note>
+
+<Warning>
+  We explicitly do not handle mutations. If you wish to retrieve fresh entries or have a primed cache, you must manage this yourself. All we require is a Map-like object.
+</Warning>
+
+## Type Definitions
+
+```typescript
+type LoadFn<T, K = string> = (keys: K[]) => Promise<(T | Error)[]>;
+
+type MapLike<K, V> = {
+  get(key: K): V | undefined;
+  set(key: K, value: V): void;
+  has(key: K): boolean;
+  delete(key: K): void;
+};
+```

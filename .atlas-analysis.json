@@ -1,0 +1,60 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "dldr",
+  "projectDescription": "A tiny utility for batching and caching operations",
+  "theme": "palm",
+  "primaryColor": "#3B82F6",
+  "lightColor": "#60A5FA",
+  "darkColor": "#2563EB",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "introduction",
+          "installation",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Core Concepts",
+        "pages": [
+          "concepts/batching",
+          "concepts/caching",
+          "concepts/identity"
+        ]
+      },
+      {
+        "group": "API Reference",
+        "pages": [
+          "api/load",
+          "api/factory",
+          "api/cache"
+        ]
+      },
+      {
+        "group": "Examples",
+        "pages": [
+          "examples/graphql",
+          "examples/database",
+          "examples/custom-cache"
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Automatic batching within microtask queue",
+    "Optional caching with custom cache support",
+    "Identity-based deduplication",
+    "Tiny footprint with no runtime dependencies",
+    "TypeScript support with generic types"
+  ],
+  "publicApiSurface": [
+    "load(loadFn, key, identity?): Promise<T>",
+    "factory(loadFn): (key, identity?) => Promise<T>",
+    "load(loadFn, cache, key, identity?): Promise<T> [cache module]",
+    "factory(loadFn, cache?): (key, identity?) => Promise<T> [cache module]",
+    "LoadFn<T, K>",
+    "MapLike<K, V>"
+  ]
+}
